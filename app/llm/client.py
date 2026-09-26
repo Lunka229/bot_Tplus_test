@@ -1,0 +1,75 @@
+import time
+
+import httpx
+
+from app.llm.models import LLMResponse
+
+
+class OllamaClient:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout: float = 120.0,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout = timeout
+
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+    ) -> LLMResponse:
+        messages = []
+
+        if system_prompt:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                }
+            )
+
+        messages.append(
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        )
+
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+        }
+
+        start_time = time.perf_counter()
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+            )
+
+        latency = time.perf_counter() - start_time
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        message = data.get("message", {})
+        text = message.get("content", "")
+
+        prompt_tokens = data.get("prompt_eval_count", 0)
+        completion_tokens = data.get("eval_count", 0)
+        total_tokens = prompt_tokens + completion_tokens
+
+        return LLMResponse(
+            text=text,
+            latency_seconds=latency,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            model=data.get("model", self.model),
+        )
