@@ -3,6 +3,12 @@ from app.core.request_context import generate_request_id
 from app.llm.client import OllamaClient
 from app.llm.models import LLMResponse
 
+from typing import Any
+
+from app.tools.executor import execute_tool
+import json
+import logging
+from typing import Any
 
 logger = get_logger(__name__)
 
@@ -15,27 +21,137 @@ class LLMService:
         self,
         prompt: str,
         system_prompt: str | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> tuple[str, LLMResponse]:
         request_id = generate_request_id()
 
         logger.info(
-            "LLM request started | request_id=%s | model=%s",
+            "LLM request started | "
+            "request_id=%s | model=%s | history_messages=%d",
             request_id,
             self.client.model,
+            len(history or []),
         )
 
         result = await self.client.generate(
             prompt=prompt,
             system_prompt=system_prompt,
+            history=history,
         )
 
         logger.info(
             "LLM request completed | "
             "request_id=%s | latency=%.2f | "
-            "tokens=%d",
+            "prompt_tokens=%d | completion_tokens=%d | "
+            "total_tokens=%d",
             request_id,
             result.latency_seconds,
+            result.prompt_tokens,
+            result.completion_tokens,
             result.total_tokens,
         )
 
         return request_id, result
+    
+    async def generate_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> LLMResponse:
+        total_latency = 0.0
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+
+        current_messages = list(messages)
+
+        while True:
+            data, latency = (
+                await self.client.generate_with_tools(
+                    messages=current_messages,
+                    tools=tools,
+                )
+            )
+
+            total_latency += latency
+
+            total_prompt_tokens += int(
+                data.get("prompt_eval_count", 0)
+            )
+
+            total_completion_tokens += int(
+                data.get("eval_count", 0)
+            )
+
+            message = data["message"]
+
+            tool_calls = message.get(
+                "tool_calls"
+            )
+
+            if not tool_calls:
+                text = (
+                    message.get("content") or ""
+                ).strip()
+
+                return LLMResponse(
+                    text=text,
+                    latency_seconds=total_latency,
+                    prompt_tokens=total_prompt_tokens,
+                    completion_tokens=(
+                        total_completion_tokens
+                    ),
+                    total_tokens=(
+                        total_prompt_tokens
+                        + total_completion_tokens
+                    ),
+                    model=data.get(
+                        "model",
+                        self.client.model,
+                    ),
+                )
+
+            # Сохраняем ответ assistant с tool_calls
+            current_messages.append(message)
+
+            for tool_call in tool_calls:
+                function = tool_call["function"]
+
+                tool_name = function["name"]
+                arguments = function.get(
+                    "arguments",
+                    {},
+                )
+
+                logger.info(
+                    "Tool call | name=%s | arguments=%s",
+                    tool_name,
+                    arguments,
+                )
+
+                try:
+                    tool_result = execute_tool(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                    )
+
+                except Exception as exc:
+                    logger.exception(
+                        "Tool execution failed | "
+                        "tool=%s",
+                        tool_name,
+                    )
+
+                    tool_result = json.dumps(
+                        {
+                            "error": str(exc),
+                        },
+                        ensure_ascii=False,
+                    )
+
+                current_messages.append(
+                    {
+                        "role": "tool",
+                        "content": tool_result,
+                        "tool_name": tool_name,
+                    }
+                )

@@ -4,7 +4,7 @@ import httpx
 
 from app.llm.exceptions import LLMConnectionError, LLMResponseError
 from app.llm.models import LLMResponse
-
+from typing import Any
 
 class OllamaClient:
     def __init__(
@@ -17,10 +17,58 @@ class OllamaClient:
         self.model = model
         self.timeout = timeout
 
+    async def generate_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], float]:
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "stream": False,
+        }
+
+        start_time = time.perf_counter()
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout
+            ) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/chat",
+                    json=payload,
+                )
+
+            response.raise_for_status()
+
+        except httpx.ConnectError as exc:
+            raise LLMConnectionError(
+                f"Cannot connect to Ollama at {self.base_url}"
+            ) from exc
+
+        except httpx.HTTPError as exc:
+            raise LLMConnectionError(
+                "Ollama HTTP request failed"
+            ) from exc
+
+        latency = time.perf_counter() - start_time
+
+        try:
+            data = response.json()
+
+        except ValueError as exc:
+            raise LLMResponseError(
+                "Invalid JSON response from Ollama"
+            ) from exc
+
+        return data, latency
+
     async def generate(
         self,
         prompt: str,
         system_prompt: str | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> LLMResponse:
         messages: list[dict[str, str]] = []
 
@@ -31,6 +79,9 @@ class OllamaClient:
                     "content": system_prompt,
                 }
             )
+
+        if history:
+            messages.extend(history)
 
         messages.append(
             {
