@@ -7,6 +7,8 @@ from app.llm.exceptions import LLMConnectionError, LLMResponseError
 from app.services.conversation import ConversationManager
 from app.services.llm_service import LLMService
 
+from app.tools.definitions import MARGIN_TOOL
+
 
 router = Router()
 
@@ -45,21 +47,49 @@ def create_message_handler(
         history = conversation_manager.get_history(
             user_id=user_id
         )
+        
+        system_prompt = (
+            "Ты AI-консультант продавца "
+            "на маркетплейсах.\n\n"
+            "Твои задачи:\n"
+            "1. Помогать продавцу анализировать "
+            "продажи и экономику товара.\n"
+            "2. Отвечать понятно и по существу.\n"
+            "3. Использовать доступные инструменты "
+            "для точных расчётов.\n"
+            "4. Не выполнять арифметические расчёты "
+            "самостоятельно, если для этого доступен tool.\n"
+            "5. Не придумывать данные, которых нет "
+            "в сообщении пользователя или контексте.\n\n"
+            "Если для ответа нужен расчёт "
+            "маржинальности, используй "
+            "calculate_margin.\n\n"
+            "После получения результата инструмента "
+            "объясни его пользователю простым языком."
+        )
+
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            }
+        ]
+
+        messages.extend(history[:-1])
+
+        messages.append(
+            {
+                "role": "user",
+                "content": message.text,
+            }
+        )
 
         try:
-            request_id, result = await llm_service.generate(
-                prompt=message.text,
-                history=history[:-1],
-                system_prompt=(
-                    "Ты консультант продавца "
-                    "на маркетплейсах. "
-                    "Отвечай понятно, кратко "
-                    "и по существу. "
-                    "Учитывай контекст предыдущих "
-                    "сообщений пользователя. "
-                    "Если информации недостаточно, "
-                    "задай уточняющий вопрос."
-                ),
+            request_id, result = (
+                await llm_service.generate_with_tools(
+                    messages=messages,
+                    tools=[MARGIN_TOOL],
+                )
             )
 
             conversation_manager.add_assistant_message(

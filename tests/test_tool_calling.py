@@ -40,10 +40,12 @@ async def test_margin_tool_calling():
         },
     ]
 
-    result = await service.generate_with_tools(
+    request_id, result = await service.generate_with_tools(
         messages=messages,
         tools=[MARGIN_TOOL],
     )
 
+    assert request_id
     assert result.text
     assert "60" in result.text
+    assert result.total_tokens > 0
