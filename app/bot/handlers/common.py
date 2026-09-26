@@ -2,22 +2,19 @@ from aiogram import Router
 from aiogram.filters import CommandStart
 from aiogram.types import Message
 
-from app.llm.client import OllamaClient
+from app.core.logging import get_logger
+from app.llm.exceptions import LLMConnectionError, LLMResponseError
+from app.services.llm_service import LLMService
 
 
 router = Router()
-
-
-llm_client: OllamaClient | None = None
-
-
-def set_llm_client(client: OllamaClient) -> None:
-    global llm_client
-    llm_client = client
+logger = get_logger(__name__)
 
 
 @router.message(CommandStart())
-async def start_handler(message: Message) -> None:
+async def start_handler(
+    message: Message,
+) -> None:
     await message.answer(
         "Привет!\n\n"
         "Я Marketplace AI Bot — помощник продавца "
@@ -26,40 +23,54 @@ async def start_handler(message: Message) -> None:
     )
 
 
-@router.message()
-async def message_handler(message: Message) -> None:
-    if llm_client is None:
-        await message.answer(
-            "LLM-клиент ещё не настроен."
-        )
-        return
+def create_message_handler(
+    llm_service: LLMService,
+):
+    async def message_handler(
+        message: Message,
+    ) -> None:
+        if not message.text:
+            await message.answer(
+                "Пока я умею работать только "
+                "с текстовыми сообщениями."
+            )
+            return
 
-    user_text = message.text
+        try:
+            request_id, result = await llm_service.generate(
+                prompt=message.text,
+                system_prompt=(
+                    "Ты консультант продавца "
+                    "на маркетплейсах. "
+                    "Отвечай понятно, кратко "
+                    "и по существу. "
+                    "Если информации недостаточно, "
+                    "задай уточняющий вопрос."
+                ),
+            )
 
-    if not user_text:
-        await message.answer(
-            "Пока я умею работать только с текстовыми сообщениями."
-        )
-        return
+            await message.answer(
+                f"{result.text}\n\n"
+                f"Время: "
+                f"{result.latency_seconds:.2f} сек.\n"
+                f"Токены: {result.total_tokens}\n"
+                f"Request ID: {request_id}"
+            )
 
-    try:
-        result = await llm_client.generate(
-            prompt=user_text,
-            system_prompt=(
-                "Ты консультант продавца на маркетплейсах. "
-                "Отвечай понятно, кратко и по существу. "
-                "Если информации недостаточно, задай уточняющий вопрос."
-            ),
-        )
+        except LLMConnectionError:
+            logger.exception("LLM connection error")
 
-        await message.answer(
-            f"{result.text}\n\n"
-            f"Время: {result.latency_seconds:.2f} сек.\n"
-            f"Токены: {result.total_tokens}"
-        )
+            await message.answer(
+                "Не удалось подключиться к LLM. "
+                "Проверь, запущен ли Ollama."
+            )
 
-    except Exception:
-        await message.answer(
-            "Произошла ошибка при обращении к LLM. "
-            "Попробуй ещё раз."
-        )
+        except LLMResponseError:
+            logger.exception("LLM response error")
+
+            await message.answer(
+                "LLM вернула некорректный ответ. "
+                "Попробуй повторить запрос."
+            )
+
+    return message_handler

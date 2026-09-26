@@ -2,6 +2,7 @@ import time
 
 import httpx
 
+from app.llm.exceptions import LLMConnectionError, LLMResponseError
 from app.llm.models import LLMResponse
 
 
@@ -21,7 +22,7 @@ class OllamaClient:
         prompt: str,
         system_prompt: str | None = None,
     ) -> LLMResponse:
-        messages = []
+        messages: list[dict[str, str]] = []
 
         if system_prompt:
             messages.append(
@@ -46,27 +47,54 @@ class OllamaClient:
 
         start_time = time.perf_counter()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/api/chat",
-                json=payload,
-            )
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout
+            ) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/chat",
+                    json=payload,
+                )
+
+            response.raise_for_status()
+
+        except httpx.ConnectError as exc:
+            raise LLMConnectionError(
+                f"Cannot connect to Ollama at {self.base_url}"
+            ) from exc
+
+        except httpx.HTTPError as exc:
+            raise LLMConnectionError(
+                "Ollama HTTP request failed"
+            ) from exc
 
         latency = time.perf_counter() - start_time
 
-        response.raise_for_status()
+        try:
+            data = response.json()
 
-        data = response.json()
+            message = data["message"]
+            text = message["content"]
 
-        message = data.get("message", {})
-        text = message.get("content", "")
+            prompt_tokens = int(
+                data.get("prompt_eval_count", 0)
+            )
 
-        prompt_tokens = data.get("prompt_eval_count", 0)
-        completion_tokens = data.get("eval_count", 0)
-        total_tokens = prompt_tokens + completion_tokens
+            completion_tokens = int(
+                data.get("eval_count", 0)
+            )
+
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LLMResponseError(
+                "Invalid response received from Ollama"
+            ) from exc
+
+        total_tokens = (
+            prompt_tokens + completion_tokens
+        )
 
         return LLMResponse(
-            text=text,
+            text=text.strip(),
             latency_seconds=latency,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
