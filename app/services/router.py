@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+import unicodedata
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -35,11 +37,15 @@ ROUTES = (
     Route(
         name="product_card",
         keywords=(
-            "карточк",
+            "карточка",
+            "карточку",
             "описание товара",
+            "описание",
             "заголовок товара",
+            "заголовок",
             "характеристик",
             "фото товара",
+            "фото",
             "инфографик",
             "контент товара",
         ),
@@ -47,8 +53,12 @@ ROUTES = (
 )
 
 
+def normalize_text(text: str) -> str:
+    return unicodedata.normalize("NFC", text).lower().strip()
+
+
 def route_request(text: str) -> str:
-    normalized = text.lower().strip()
+    normalized = normalize_text(text)
 
     for route in ROUTES:
         for keyword in route.keywords:

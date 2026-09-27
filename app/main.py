@@ -7,12 +7,21 @@ from aiogram.filters import Command
 from app.bot.handlers.common import (
     create_clear_handler,
     create_message_handler,
+    create_photo_handler,
     router,
 )
 from app.config import get_settings
 from app.llm.client import OllamaClient
 from app.services.conversation import ConversationManager
 from app.services.llm_service import LLMService
+
+from app.services.rag_service import RAGService
+from app.rag.indexer import build_index
+
+from app.llm.vision_client import VisionClient
+from app.services.vision_service import VisionService
+
+from aiogram import Bot, Dispatcher, F
 
 
 logging.basicConfig(
@@ -37,7 +46,13 @@ async def main() -> None:
         base_url=settings.ollama_base_url,
         model=settings.ollama_model,
     )
-
+    vision_client = VisionClient(
+        base_url=settings.ollama_base_url,
+        model="qwen2.5vl:3b",
+    )
+    vision_service = VisionService(
+        client=vision_client,
+    )
     llm_service = LLMService(
         client=ollama_client,
     )
@@ -45,9 +60,17 @@ async def main() -> None:
     conversation_manager = ConversationManager(
         max_messages=10,
     )
+    rag_service = RAGService()
 
     dp = Dispatcher()
-    
+
+    router.message.register(
+        create_photo_handler(
+            vision_service,
+        ),
+        F.photo,
+    )     
+
     # Регистрируем команду /clear
     router.message.register(
         create_clear_handler(
@@ -61,10 +84,10 @@ async def main() -> None:
         create_message_handler(
             llm_service,
             conversation_manager,
+            rag_service,
         )
-    )
+    )   
 
-    # Подключаем router после регистрации всех handlers
     dp.include_router(router)
 
     logging.info(
@@ -76,7 +99,15 @@ async def main() -> None:
         "Ollama URL: %s",
         settings.ollama_base_url,
     )
+    logging.info(
+        "Building RAG index..."
+    )
 
+    await build_index()
+
+    logging.info(
+        "RAG index built successfully"
+    )
     await dp.start_polling(bot)
 
 
