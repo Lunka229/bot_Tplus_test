@@ -8,8 +8,10 @@ from app.bot.handlers.common import (
     create_clear_handler,
     create_message_handler,
     create_photo_handler,
+    create_margin_handler,
     router,
 )
+
 from app.config import get_settings
 from app.llm.client import OllamaClient
 from app.services.conversation import ConversationManager
@@ -55,7 +57,7 @@ async def main() -> None:
     vision_service = VisionService(
         client=vision_client,
     )
-    
+
     mcp_client = MCPClient()
 
     llm_service = LLMService(
@@ -77,14 +79,22 @@ async def main() -> None:
         F.photo,
     )     
 
-    # Регистрируем команду /clear
+    clear_handler = create_clear_handler(
+        conversation_manager,
+    )
+
     router.message.register(
-        create_clear_handler(
-            conversation_manager,
-        ),
+        clear_handler,
         Command("clear"),
     )
 
+    router.message.register(
+        clear_handler,
+        F.text == "🗑 Очистить контекст",
+    )
+    create_margin_handler(
+        llm_service,
+    )
     # Регистрируем обработчик обычных текстовых сообщений
     router.message.register(
         create_message_handler(

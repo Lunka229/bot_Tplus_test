@@ -21,10 +21,18 @@ from aiogram import F
 
 from app.services.vision_service import VisionService
 
+from app.bot.keyboards.main import get_main_keyboard
+from aiogram.fsm.context import FSMContext
+
+from app.bot.states import MarginStates
+from app.bot.keyboards.main import get_main_keyboard
+
+
 
 router = Router()
 
 logger = get_logger(__name__)
+
 
 
 @router.message(CommandStart())
@@ -33,9 +41,9 @@ async def start_handler(message: Message) -> None:
         "Привет!\n\n"
         "Я Marketplace AI Bot — помощник продавца "
         "на маркетплейсах.\n\n"
-        "Задай мне вопрос о продажах."
+        "Задай мне вопрос или выбери действие:",
+        reply_markup=get_main_keyboard(),
     )
-
 
 def create_message_handler(
     llm_service: LLMService,
@@ -163,16 +171,201 @@ def create_message_handler(
 def create_clear_handler(
     conversation_manager: ConversationManager,
 ):
-    async def clear_handler(message: Message) -> None:
+    async def clear_handler(
+        message: Message,
+        state: FSMContext,
+    ) -> None:
         user_id = message.from_user.id
 
         conversation_manager.clear(user_id)
 
+        await state.clear()
+
         await message.answer(
-            "Контекст диалога очищен."
+            "Контекст диалога очищен.",
+            reply_markup=get_main_keyboard(),
         )
 
     return clear_handler
+
+
+def create_margin_handler(
+    llm_service: LLMService,
+):
+    async def margin_start_handler(
+        message: Message,
+        state: FSMContext,
+    ) -> None:
+        await state.set_state(
+            MarginStates.waiting_for_price
+        )
+
+        await message.answer(
+            "Введите цену продажи товара в рублях:"
+        )
+
+    async def margin_price_handler(
+        message: Message,
+        state: FSMContext,
+    ) -> None:
+        if not message.text:
+            await message.answer(
+                "Введите цену числом.\n"
+                "Например: 1000"
+            )
+            return
+
+        try:
+            price = float(
+                message.text.replace(",", ".").strip()
+            )
+
+            if price <= 0:
+                raise ValueError
+
+        except ValueError:
+            await message.answer(
+                "Некорректная цена.\n"
+                "Введите положительное число, например: 1000"
+            )
+            return
+
+        await state.update_data(
+            price=price
+        )
+
+        await state.set_state(
+            MarginStates.waiting_for_cost
+        )
+
+        await message.answer(
+            "Теперь введите себестоимость товара в рублях:"
+        )
+
+    async def margin_cost_handler(
+        message: Message,
+        state: FSMContext,
+    ) -> None:
+        if not message.text:
+            await message.answer(
+                "Введите себестоимость числом.\n"
+                "Например: 600"
+            )
+            return
+
+        try:
+            cost = float(
+                message.text.replace(",", ".").strip()
+            )
+
+            if cost <= 0:
+                raise ValueError
+
+        except ValueError:
+            await message.answer(
+                "Некорректная себестоимость.\n"
+                "Введите положительное число, например: 600"
+            )
+            return
+
+        data = await state.get_data()
+
+        price = data.get("price")
+
+        if price is None:
+            await state.clear()
+
+            await message.answer(
+                "Не удалось получить цену. "
+                "Начните расчёт заново."
+            )
+            return
+
+        if cost > price:
+            await message.answer(
+                "Себестоимость не должна быть больше "
+                "цены продажи.\n\n"
+                f"Цена продажи: {price:.2f} ₽\n"
+                f"Себестоимость: {cost:.2f} ₽\n\n"
+                "Введите себестоимость ещё раз:"
+            )
+            return
+
+        try:
+            tool_result = await llm_service.call_mcp_tool(
+                tool_name="calculate_margin_tool",
+                arguments={
+                    "price": price,
+                    "cost": cost,
+                },
+            )
+
+            logger.info(
+                "MCP margin button call | "
+                "price=%s | cost=%s | result=%s",
+                price,
+                cost,
+                tool_result,
+            )
+
+            import json
+
+            result_data = json.loads(tool_result)
+
+            profit = result_data.get(
+                "profit",
+                0,
+            )
+
+            margin_percent = result_data.get(
+                "margin_percent",
+                0,
+            )
+
+            markup_percent = result_data.get(
+                "markup_percent",
+                0,
+            )
+
+            await message.answer(
+                "🧮 Результат расчёта\n\n"
+                f"Цена продажи: {price:.2f} ₽\n"
+                f"Себестоимость: {cost:.2f} ₽\n"
+                f"Прибыль: {profit:.2f} ₽\n"
+                f"Маржинальность: {margin_percent:.2f}%\n"
+                f"Наценка: {markup_percent:.2f}%",
+                reply_markup=get_main_keyboard(),
+            )
+
+        except Exception:
+            logger.exception(
+                "MCP margin button error"
+            )
+
+            await message.answer(
+                "Не удалось выполнить расчёт через MCP. "
+                "Попробуйте ещё раз."
+            )
+
+        finally:
+            await state.clear()
+
+    router.message.register(
+        margin_start_handler,
+        F.text == "🧮 Рассчитать маржу",
+    )
+
+    router.message.register(
+        margin_price_handler,
+        MarginStates.waiting_for_price,
+    )
+
+    router.message.register(
+        margin_cost_handler,
+        MarginStates.waiting_for_cost,
+    )
+
+    return margin_start_handler
 
 def create_photo_handler(
     vision_service: VisionService,

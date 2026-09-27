@@ -23,6 +23,7 @@ class LLMService:
         self.client = client
         self.mcp_client = mcp_client
 
+
     
     async def _execute_mcp_tool(
         self,
@@ -36,11 +37,18 @@ class LLMService:
                 "MCP client is not configured"
             )
 
+
         result = await self.mcp_client.call_tool(
             tool_name,
             arguments,
         )
-
+        logger.info(
+            "MCP raw result | "
+            "tool=%s | type=%s | result=%r",
+            tool_name,
+            type(result),
+            result,
+        )
         if result.is_error:
             return json.dumps(
                 {
@@ -67,6 +75,26 @@ class LLMService:
                 ]
             },
             ensure_ascii=False,
+        )
+
+
+    async def call_mcp_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> str:
+        """Вызвать MCP tool напрямую."""
+
+        logger.info(
+            "Direct MCP tool call | "
+            "tool=%s | arguments=%s",
+            tool_name,
+            arguments,
+        )
+
+        return await self._execute_mcp_tool(
+            tool_name=tool_name,
+            arguments=arguments,
         )
     
     async def _get_mcp_tool_names(self) -> set[str]:
@@ -246,15 +274,49 @@ class LLMService:
                     if tool_name in mcp_tool_names:
                         logger.info(
                             "MCP tool call | "
-                            "request_id=%s | tool=%s",
+                            "request_id=%s | tool=%s | arguments=%s",
                             request_id,
                             tool_name,
+                            arguments,
                         )
 
-                        tool_result = await self._execute_mcp_tool(
-                            tool_name=tool_name,
-                            arguments=arguments,
-                        )
+                        if tool_name == "calculate_margin_tool":
+                            has_price = "price" in arguments
+                            has_cost = "cost" in arguments
+
+                            if not has_price or not has_cost:
+                                logger.warning(
+                                    "MCP tool call rejected | "
+                                    "request_id=%s | tool=%s | "
+                                    "reason=missing_arguments",
+                                    request_id,
+                                    tool_name,
+                                )
+
+                                tool_result = json.dumps(
+                                    {
+                                        "error": "missing_arguments",
+                                        "message": (
+                                            "Для расчёта маржи нужны "
+                                            "цена продажи и себестоимость. "
+                                            "Нельзя придумывать эти значения."
+                                        ),
+                                    },
+                                    ensure_ascii=False,
+                                )
+
+                            else:
+                                tool_result = await self._execute_mcp_tool(
+                                    tool_name=tool_name,
+                                    arguments=arguments,
+                                )
+
+                        else:
+                            tool_result = await self._execute_mcp_tool(
+                                tool_name=tool_name,
+                                arguments=arguments,
+                            )
+
 
                     else:
                         is_valid, validation_error = (
