@@ -23,6 +23,8 @@ from app.services.vision_service import VisionService
 
 from aiogram import Bot, Dispatcher, F
 
+from app.mcp.client import MCPClient
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,8 +55,12 @@ async def main() -> None:
     vision_service = VisionService(
         client=vision_client,
     )
+    
+    mcp_client = MCPClient()
+
     llm_service = LLMService(
         client=ollama_client,
+        mcp_client=mcp_client,
     )
 
     conversation_manager = ConversationManager(

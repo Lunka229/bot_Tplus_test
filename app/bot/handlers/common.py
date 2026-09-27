@@ -101,11 +101,20 @@ def create_message_handler(
             }
         )
 
+
+        
         try:
+            mcp_tools = await llm_service.get_mcp_tools()
+
+            all_tools = [
+                MARGIN_TOOL,
+                *mcp_tools,
+            ]
+
             request_id, result = (
                 await llm_service.generate_with_tools(
                     messages=messages,
-                    tools=[MARGIN_TOOL],
+                    tools=all_tools,
                 )
             )
 
