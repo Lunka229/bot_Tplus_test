@@ -6,7 +6,10 @@ from app.core.request_context import generate_request_id
 from app.llm.client import OllamaClient
 from app.llm.models import LLMResponse
 from app.tools.executor import execute_tool
-from app.tools.validator import validate_tool_arguments
+from app.tools.validator import (
+    extract_known_values,
+    validate_tool_arguments,
+)
 
 from app.mcp.client import MCPClient
 
@@ -269,47 +272,78 @@ class LLMService:
                     tool_name,
                     arguments,
                 )
-
+############################################################################################################
                 try:
-                    if tool_name in mcp_tool_names:
-                        logger.info(
-                            "MCP tool call | "
-                            "request_id=%s | tool=%s | arguments=%s",
-                            request_id,
-                            tool_name,
-                            arguments,
+                    if tool_name == "calculate_margin_tool":
+                        known_values = extract_known_values(
+                            current_messages
                         )
 
-                        if tool_name == "calculate_margin_tool":
-                            has_price = "price" in arguments
-                            has_cost = "cost" in arguments
+                        required_fields = ("price", "cost")
 
-                            if not has_price or not has_cost:
-                                logger.warning(
-                                    "MCP tool call rejected | "
-                                    "request_id=%s | tool=%s | "
-                                    "reason=missing_arguments",
-                                    request_id,
-                                    tool_name,
-                                )
+                        validation_error = None
 
-                                tool_result = json.dumps(
-                                    {
-                                        "error": "missing_arguments",
-                                        "message": (
-                                            "Для расчёта маржи нужны "
-                                            "цена продажи и себестоимость. "
-                                            "Нельзя придумывать эти значения."
-                                        ),
-                                    },
-                                    ensure_ascii=False,
+                        for field in required_fields:
+                            if field not in arguments:
+                                validation_error = (
+                                    f"Не указан обязательный параметр: {field}"
                                 )
+                                break
 
-                            else:
-                                tool_result = await self._execute_mcp_tool(
-                                    tool_name=tool_name,
-                                    arguments=arguments,
+                            if field not in known_values:
+                                validation_error = (
+                                    f"Параметр {field} не был явно указан "
+                                    "пользователем."
                                 )
+                                break
+
+                            try:
+                                argument_value = round(
+                                    float(arguments[field]),
+                                    2,
+                                )
+                            except (TypeError, ValueError):
+                                validation_error = (
+                                    f"Некорректное значение параметра: {field}"
+                                )
+                                break
+
+                            known_value = round(
+                                float(known_values[field]),
+                                2,
+                            )
+
+                            if argument_value != known_value:
+                                validation_error = (
+                                    f"Значение параметра {field} "
+                                    f"({argument_value}) не совпадает "
+                                    "с указанным пользователем "
+                                    f"значением ({known_value})."
+                                )
+                                break
+
+                        if validation_error is not None:
+                            logger.warning(
+                                "MCP tool call rejected | "
+                                "request_id=%s | tool=%s | reason=%s",
+                                request_id,
+                                tool_name,
+                                validation_error,
+                            )
+
+                            tool_result = json.dumps(
+                                {
+                                    "error": "tool_call_rejected",
+                                    "message": (
+                                        "Нельзя использовать "
+                                        "неподтверждённые данные. "
+                                        "Попроси пользователя указать "
+                                        "недостающие данные."
+                                    ),
+                                    "details": validation_error,
+                                },
+                                ensure_ascii=False,
+                            )
 
                         else:
                             tool_result = await self._execute_mcp_tool(
